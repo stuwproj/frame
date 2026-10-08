@@ -21,23 +21,9 @@
 
 package frame
 
-type TestPool = Pool[TestHeader]
-
-func NewTestPool(defaultSize int) *TestPool {
-	return NewPool[TestHeader](NewDefaultRetentionPolicy(defaultSize * 2))
-}
-
-func NewTestFrame(meta uint32, payload []byte) *Frame[TestHeader] {
-	crc := NewCRC32C[TestHeader]()
-	h := NewTestHeader(meta, 0, payload)
-	f := &Frame[TestHeader]{
-		Header:  h,
+func NewTestFrame(m uint32, payload []byte) *Frame[uint32, TestHeader] {
+	return &Frame[uint32, TestHeader]{
+		Header:  NewTestHeader(m, payload),
 		Payload: payload,
 	}
-
-	c := crc.Sum(f)
-	h.SetChecksum(c)
-	f.Header = h
-
-	return f
 }

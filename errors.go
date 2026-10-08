@@ -35,4 +35,7 @@ var (
 
 	// ErrInvalidFrameHeader is returned when a frame header is invalid
 	ErrInvalidFrameHeader = errors.New("invalid frame header")
+
+	// ErrInvalidPayloadLength is returned when the payload length does not match the expected value.
+	ErrInvalidPayloadLength = errors.New("invalid payload length")
 )

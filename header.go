@@ -30,10 +30,20 @@ import "unsafe"
 // implementations. This is unlikely to matter much if at all for performance,
 // but it provides easier safety guarantees for the implementer.
 type Header interface {
-	~[8]byte | ~[16]byte | ~[32]byte | ~[64]byte | ~[128]byte // WARN: see headerBytes()
+	~[4]byte | ~[8]byte | ~[16]byte | ~[32]byte | ~[64]byte | ~[128]byte // WARN: see HeaderBytes()
+}
+
+// PayloadHeader is a header that includes a payload length.
+type PayloadHeader[LT uint32 | uint16] interface {
+	Header
 
 	// PayloadLength returns the length of the payload in bytes.
-	PayloadLength() uint32
+	PayloadLength() LT
+}
+
+// ChecksumHeader is a header that includes a checksum.
+type ChecksumHeader interface {
+	Header
 
 	// Checksum returns the checksum of the frame.
 	// This should include the header and payload, but not the checksum field itself.
@@ -43,17 +53,17 @@ type Header interface {
 	ChecksumBytes() int
 }
 
-// IndexedHeader is a header that includes a monotonic frame index.
-type IndexedHeader interface {
-	Header
+// ScannerHeader is a header that enables variable stride scanning.
+type ScannerHeader[LT uint32 | uint16] interface {
+	PayloadHeader[LT]
 
-	// Index returns the frame index.
-	Index() uint32
+	// IndexStride returns the number of logical frames that are represented by this frame.
+	IndexStride() uint16
 }
 
-// headerBytes returns the bytes of the header as a slice.
+// HeaderBytes returns the bytes of the header as a slice.
 // This does not copy the header, but returns a slice that points to the header in memory.
 // It relies on Header being constrained to fixed-size byte arrays.
-func headerBytes[HT Header](h *HT) []byte {
+func HeaderBytes[HT Header](h *HT) []byte {
 	return unsafe.Slice((*byte)(unsafe.Pointer(h)), unsafe.Sizeof(*h)) // #nosec: G103 // see above
 }

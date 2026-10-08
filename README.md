@@ -4,31 +4,48 @@ Generic utilities for scanning, checksumming and pooling binary frames.
 
 ## Scanning Performance
 
-The following sample benchmarks ran with:
-
-- 16B headers and 128B payloads (144B total data)
-- 1024 frames for the scanner tests
+Below a sample of the benchmarks using 16K frames.
 
 _Note that `frame` scanning is not absolutely zero-allocation as these benchmarks
-seem to suggest. Not only are the pools pre-warmed with 3 frames, it never tries
-to get a value higher than the default. These benchmark serve to isolate per record 
-allocation metric, not pooling retention policy-driven allocation properties.
+seem to suggest. These benchmark serve to isolate per scan allocation metrics; under 
+real world conditions payload sizes may fluctuate and cause extra allocs.
 
 ```
 goos: linux
 goarch: amd64
 pkg: github.com/johnknl/frame
 cpu: AMD Ryzen 9 5950X 16-Core Processor
-BenchmarkCRC32C_Sum-32          24558889                45.78 ns/op     22718.00 MB/s          0 B/op          0 allocs/op
-BenchmarkCRC32C_Validate-32     22768965                48.79 ns/op     21315.62 MB/s          0 B/op          0 allocs/op
-BenchmarkReaderAt_ReadAt/full_payload-32              11529084               100.3 ns/op     31094.09 MB/s          0 B/op          0 allocs/op
-BenchmarkReaderAt_ReadAt/header_only_limit_zero-32    18123859                63.16 ns/op      759.92 MB/s          0 B/op          0 allocs/op
-BenchmarkReader_Read/full_payload-32                  10247882               111.2 ns/op     28065.62 MB/s          0 B/op          0 allocs/op
-BenchmarkReader_Read/header_only_limit_zero-32        11729889                99.92 ns/op      480.37 MB/s          0 B/op          0 allocs/op
-BenchmarkScanner_Scan/default-32                         32208             33286 ns/op        4224.70 MB/s          30763314 records/s          0 B/op          0 allocs/op
-BenchmarkScanner_Scan/with_validation-32                 19544             59186 ns/op        2376.00 MB/s          17301529 records/s          0 B/op          0 allocs/op
-BenchmarkScanner_Scan/at_offset-32                       43540             25517 ns/op        4133.28 MB/s          30097596 records/s          0 B/op          0 allocs/op
+BenchmarkScanner_SeekIndex
+BenchmarkScanner_SeekIndex/default
+BenchmarkScanner_SeekIndex/default-32              29005             40626 ns/op        13845.83 MB/s      1575348 seeks/s             0 B/op          0 allocs/op
+BenchmarkScanner_SeekIndex/with_index
+BenchmarkScanner_SeekIndex/with_index-32          107697             11043 ns/op        50938.73 MB/s      5795696 seeks/s             0 B/op          0 allocs/op
+BenchmarkScanner_SeekIndex/with_mmap_frame_reader
+BenchmarkScanner_SeekIndex/with_mmap_frame_reader-32              639747              1892 ns/op        297306.21 MB/s    33826840 seeks/s             0 B/op          0 allocs/op
+BenchmarkScanner_Scan
+BenchmarkScanner_Scan/bytes
+BenchmarkScanner_Scan/bytes/default/16384
+BenchmarkScanner_Scan/bytes/default/16384-32                         507           2352889 ns/op        27227.17 MB/s            1.741 m/records/s             0 B/op          0 allocs/op
+BenchmarkScanner_Scan/bytes/with_validation/16384
+BenchmarkScanner_Scan/bytes/with_validation/16384-32                 259           4301698 ns/op        14892.38 MB/s            0.9522 m/records/s            0 B/op          0 allocs/op
+BenchmarkScanner_Scan/bytes/at_offset/16384
+BenchmarkScanner_Scan/bytes/at_offset/16384-32                       495           2211738 ns/op        27154.47 MB/s            1.736 m/records/s             0 B/op          0 allocs/op
+BenchmarkScanner_Scan/memory_mapped
+BenchmarkScanner_Scan/memory_mapped/default/16384
+BenchmarkScanner_Scan/memory_mapped/default/16384-32                 531           2316121 ns/op        27659.39 MB/s            1.768 m/records/s             0 B/op          0 allocs/op
+BenchmarkScanner_Scan/memory_mapped/with_validation/16384
+BenchmarkScanner_Scan/memory_mapped/with_validation/16384-32         282           4216555 ns/op        15193.09 MB/s            0.9714 m/records/s            0 B/op          0 allocs/op
+BenchmarkScanner_Scan/memory_mapped/at_offset/16384
+BenchmarkScanner_Scan/memory_mapped/at_offset/16384-32               523           2113208 ns/op        28420.58 MB/s            1.817 m/records/s             0 B/op          0 allocs/op
+BenchmarkScanner_Scan/mmap_zero_copy
+BenchmarkScanner_Scan/mmap_zero_copy/default/16384
+BenchmarkScanner_Scan/mmap_zero_copy/default/16384-32              18302             65648 ns/op        975853.79 MB/s          62.39 m/records/s              0 B/op          0 allocs/op
+BenchmarkScanner_Scan/mmap_zero_copy/with_validation/16384
+BenchmarkScanner_Scan/mmap_zero_copy/with_validation/16384-32                242           4896834 ns/op        13082.43 MB/s            0.8365 m/records/s            0 B/op          0 allocs/op
+BenchmarkScanner_Scan/mmap_zero_copy/at_offset/16384
+BenchmarkScanner_Scan/mmap_zero_copy/at_offset/16384-32                    17079             78944 ns/op        760770.33 MB/s          48.64 m/records/s              0 B/op          0 allocs/op
 PASS
+ok      github.com/johnknl/frame        20.411s
 ```
 
 ### Scanning Large Streams
@@ -37,100 +54,51 @@ PASS
 
 Seeking by index requires reading each consecutive frame header, hence seeking to the nearest offset
 before the header at the desired index, can have a large impact on performance when dealing with large
-streams.
-
-It does not implement any logical to physical offset index, callers are expected to maintain their
-own (sparse) index at append or load time. This index can then be used to advance the scanner closer 
-to the position of the desired index before seeking by logical offset, eg:
-
-```go
-byteOffset := sparseIndex.Floor(logicalOffset)
-scanner.Seek(byteOffset, io.SeekStart)
-scanner.SeekIndex(logicalOffset)
-
-for scanner.Scan() {
-  frame := scanner.Frame()
-  ...
-}
-```
-
-Example of load-time scanning with integrity check:
-
-```go
-pool := frame.NewPool[exampleHeader](256, 1<<20)
-scanner := frame.NewScanner(
-	stream,
-	pool,
-	frame.HeadersOnly,
-	frame.WithScannerValidator[exampleHeader](frame.NewCRC32C[exampleHeader]()),
-)
-
-defer scanner.Close()
-
-for scanner.Scan() {
-	sparseIndex.MaybeSet(scanner.Index(), scanner.Offset())
-}
-```
+streams. `frame` has built in support for "offset indexes": a mapping of logical offsets to physical
+offsets. Populating these indexes is outside of the scope of the library, typically this would be
+populated at stream "append time".
 
 ## Header
 
 A concrete Header is the way to define a frame format. It is expected to be a fixed-size array of bytes, 
 and implement the Header interface which constrains the size to 8, 16, 32, 64, or 128 bytes.
 
-```go
-type exampleHeader [16]byte
+See tests for implementation examples.
 
-func (h exampleHeader) PayloadLength() uint32 {
-	return binary.BigEndian.Uint32(h[0:4])
-}
+### Index Stride
 
-func (h exampleHeader) Index() uint32 {
-	return binary.BigEndian.Uint32(h[4:8])
-}
-
-func (h exampleHeader) Checksum() uint32 {
-	return binary.BigEndian.Uint32(h[12:16])
-}
-
-func (h exampleHeader) ChecksumBytes() []byte {
-	return h[:12]
-}
-
-func (h *exampleHeader) setChecksum(sum uint32) {
-	binary.BigEndian.PutUint32(h[12:16], sum)
-}
-```
+`frame` supports custom strides to leave "gaps" in the sequencing. This can be useful for batching,
+embedding logical frames, or striping.
 
 ## Examples
 
 <!-- EXAMPLE:ExampleNewPool:start -->
 ## NewPool
 
-Payload slices are reset when a frame is returned, allowing
-callers to reuse allocations across reads and writes.
-
 Go reference: [NewPool](https://pkg.go.dev/github.com/johnknl/frame#NewPool).
 
-The following example shows borrowing and returning frames through Pool.
+The following example shows borrowing, copying and returning pooled frames.
 
 ```go
-pool := frame.NewPool[exampleHeader](frame.NewDefaultRetentionPolicy(exampleMaxPayload))
-payload := []byte("ok")
-var h exampleHeader
-binary.BigEndian.PutUint32(h[0:4], uint32(len(payload)))
-binary.BigEndian.PutUint32(h[4:8], 0)
+pool := frame.NewPool[uint32, exampleHeader](frame.NewDefaultRetentionPolicy(16))
 
-f := pool.Get(uint32(len(payload)))
-f.Set(h, payload)
-fmt.Println(len(f.Payload), cap(f.Payload) >= 2)
-f.Return()
+borrowed := pool.Get(5)
+borrowed.Set(exampleHeader{}, []byte("hello"))
+fmt.Println(len(borrowed.Payload), cap(borrowed.Payload) >= 5)
 
-g := pool.Get(0)
-fmt.Println(len(g.Payload))
-g.Return()
+cloned := pool.Copy(borrowed)
+fmt.Println(string(cloned.Payload))
+
+pool.Put(borrowed)
+pool.Put(cloned)
+
+again := pool.Get(0)
+fmt.Println(len(again.Payload[:0]))
+pool.Put(again)
 
 // Output:
-// 2 true
+// 5 true
+// hello
 // 0
 ```
 <!-- EXAMPLE:ExampleNewPool:end -->
@@ -140,32 +108,23 @@ g.Return()
 
 ### Validate
 
-A frame is expected to have a checksum field in its header, which can be
-validated against the header and payload. This is a simple integrity check to
-detect corruption of the frame header and/or payload.
-
 Go reference: [CRC32C.Validate](https://pkg.go.dev/github.com/johnknl/frame#CRC32C.Validate).
 
-The following example shows how to stamp and then validate a frame checksum.
+The following example shows checksum validation and corruption detection.
 
 ```go
 payload := []byte("hello")
 var h exampleHeader
 binary.BigEndian.PutUint32(h[0:4], uint32(len(payload)))
-binary.BigEndian.PutUint32(h[4:8], 1)
-f := &frame.Frame[exampleHeader]{
-	Header:  h,
-	Payload: payload,
-}
+binary.BigEndian.PutUint16(h[4:6], 1)
+binary.BigEndian.PutUint32(h[6:10], 42)
+h.setChecksum(frame.Checksum(&h, payload, 0))
 
-crc := frame.NewCRC32C[exampleHeader]()
-h.setChecksum(crc.Sum(f))
-f.Header = h
+crc := &frame.CRC32C[exampleHeader]{}
+fmt.Println(crc.Validate(&h, payload) == nil)
 
-fmt.Println(crc.Validate(f) == nil)
-
-f.Payload[0] = 'H'
-fmt.Println(errors.Is(crc.Validate(f), frame.ErrInvalidChecksum))
+payload[0] = 'H'
+fmt.Println(errors.Is(crc.Validate(&h, payload), frame.ErrInvalidChecksum))
 
 // Output:
 // true
@@ -176,148 +135,91 @@ fmt.Println(errors.Is(crc.Validate(f), frame.ErrInvalidChecksum))
 <!-- EXAMPLE:ExampleScanner:start -->
 ## Scanner
 
-The frame scanner is a convenient way to read frames from a stream,
-such as a file or a buffer. To enable scanning, the header must implement
-`Index() uint32`, in addition to the `Header` interface.
-
 Go reference: [Scanner](https://pkg.go.dev/github.com/johnknl/frame#Scanner).
 
-The following example shows sequential scanning with checksum validation enabled.
+The following example shows scanning a byte stream with checksum validation.
 
 ```go
-encode := func(index uint32, payload []byte) []byte {
-	var h exampleHeader
-	binary.BigEndian.PutUint32(h[0:4], uint32(len(payload)))
-	binary.BigEndian.PutUint32(h[4:8], index)
+raw := make([]byte, 0, 128)
+raw = append(raw, encodeExampleFrame(10, []byte("a"))...)
+raw = append(raw, encodeExampleFrame(11, []byte("bc"))...)
 
-	f := &frame.Frame[exampleHeader]{Header: h, Payload: payload}
-	crc := frame.NewCRC32C[exampleHeader]()
-	h.setChecksum(crc.Sum(f))
-
-	out := make([]byte, 0, exampleHeaderSize+len(payload))
-	out = append(out, h[:]...)
-	out = append(out, payload...)
-
-	return out
+s := &frame.Scanner[uint32, exampleHeader]{
+	Loader:    &frame.ReaderLoader[uint32, exampleHeader]{Reader: bytes.NewReader(raw)},
+	Validator: &frame.CRC32C[exampleHeader]{},
+	Limit:     frame.MaxPayloadSize,
 }
 
-raw := make([]byte, 0, 2*exampleHeaderSize+3)
-raw = append(raw, encode(0, []byte("a"))...)
-raw = append(raw, encode(1, []byte("bc"))...)
-
-stream := bytes.NewReader(raw)
-pool := frame.NewPool[exampleHeader](frame.NewDefaultRetentionPolicy(exampleMaxPayload))
-
-scanner := frame.NewScanner(
-	stream,
-	pool,
-	frame.MaxPayloadSize,
-	frame.WithScannerValidator[exampleHeader](frame.NewCRC32C[exampleHeader]()),
-)
-defer scanner.Close()
-
-count := 0
-for scanner.Scan() {
-	f := scanner.Frame()
-	fmt.Printf("%d:%s\n", f.Header.Index(), string(f.Payload))
-	count++
+for s.Scan() {
+	f := s.Frame
+	fmt.Printf("%d:%s\n", f.Header.Sequence(), string(f.Payload))
 }
 
-fmt.Println("err", scanner.Err() == nil, "count", count)
+fmt.Println(errors.Is(s.Err(), io.EOF))
 
 // Output:
-// 0:a
-// 1:bc
-// err true count 2
+// 10:a
+// 11:bc
+// true
 ```
 <!-- EXAMPLE:ExampleScanner:end -->
 
-<!-- EXAMPLE:ExampleNewScanner_withOptions:start -->
-## NewScanner
+<!-- EXAMPLE:ExampleScanner_SeekIndex:start -->
+### SeekIndex
 
-### WithOptions
+Go reference: [Scanner.SeekIndex](https://pkg.go.dev/github.com/johnknl/frame#Scanner.SeekIndex).
 
-This pattern is useful when resuming from a known position in an append-only file,
-such as after a checkpoint.
-
-Go reference: [NewScanner](https://pkg.go.dev/github.com/johnknl/frame#NewScanner).
-
-The following example shows scanner configuration via functional options.
+The following example shows sparse-index assisted seeks.
 
 ```go
-encode := func(index uint32, payload []byte) []byte {
-	var h exampleHeader
-	binary.BigEndian.PutUint32(h[0:4], uint32(len(payload)))
-	binary.BigEndian.PutUint32(h[4:8], index)
+raw := make([]byte, 0, 128)
+raw = append(raw, encodeExampleFrame(0, []byte("aa"))...)
+raw = append(raw, encodeExampleFrame(1, []byte("bb"))...)
+raw = append(raw, encodeExampleFrame(2, []byte("cc"))...)
 
-	f := &frame.Frame[exampleHeader]{Header: h, Payload: payload}
-	crc := frame.NewCRC32C[exampleHeader]()
-	h.setChecksum(crc.Sum(f))
+idx := frame.NewIndex()
+idx.Set(0, 0)
+idx.Set(2, int64((exampleHeaderSize+2)*2))
 
-	out := make([]byte, 0, exampleHeaderSize+len(payload))
-	out = append(out, h[:]...)
-	out = append(out, payload...)
-
-	return out
+s := &frame.Scanner[uint32, exampleHeader]{
+	Loader: &frame.ReaderLoader[uint32, exampleHeader]{Reader: bytes.NewReader(raw)},
+	Index:  idx,
+	Limit:  frame.MaxPayloadSize,
 }
 
-raw := make([]byte, 0, 3*exampleHeaderSize+6)
-raw = append(raw, encode(10, []byte("aa"))...)
-raw = append(raw, encode(11, []byte("bb"))...)
-raw = append(raw, encode(12, []byte("cc"))...)
-
-stream := bytes.NewReader(raw)
-pool := frame.NewPool[exampleHeader](frame.NewDefaultRetentionPolicy(exampleMaxPayload))
-
-startOffset := int64(exampleHeaderSize + 2)
-scanner := frame.NewScanner(
-	stream,
-	pool,
-	frame.MaxPayloadSize,
-	frame.WithScannerOffset[exampleHeader](startOffset),
-	frame.WithScannerIndex[exampleHeader](11),
-	frame.WithScannerValidator[exampleHeader](frame.NewCRC32C[exampleHeader]()),
-)
-defer scanner.Close()
-
-for scanner.Scan() {
-	f := scanner.Frame()
-	fmt.Printf("%d:%s\n", f.Header.Index(), string(f.Payload))
-}
-
-fmt.Println(scanner.Err() == nil)
+_ = s.SeekIndex(2)
+_ = s.Scan()
+f := s.Frame
+fmt.Printf("%d:%s\n", f.Header.Sequence(), string(f.Payload))
 
 // Output:
-// 11:bb
-// 12:cc
-// true
+// 2:cc
 ```
-<!-- EXAMPLE:ExampleNewScanner_withOptions:end -->
+<!-- EXAMPLE:ExampleScanner_SeekIndex:end -->
 
 <!-- EXAMPLE:ExampleScanner_Close:start -->
 ### Close
 
-Close returns any currently borrowed frame to its pool immediately instead of waiting
-for another Scan call.
-
 Go reference: [Scanner.Close](https://pkg.go.dev/github.com/johnknl/frame#Scanner.Close).
 
-The following example shows explicit scanner cleanup for early-exit callers.
+The following example shows explicit scanner cleanup.
 
 ```go
-raw := encodeRaw(0, []byte("x"))
-stream := bytes.NewReader(raw)
-pool := frame.NewPool[exampleHeader](frame.NewDefaultRetentionPolicy(exampleMaxPayload))
+raw := encodeExampleFrame(1, []byte("ok"))
 
-scanner := frame.NewScanner(stream, pool, frame.HeadersOnly)
-if scanner.Scan() {
-	fmt.Println(len(scanner.Frame().Payload))
+s := &frame.Scanner[uint32, exampleHeader]{
+	Loader: &frame.ReaderLoader[uint32, exampleHeader]{Reader: bytes.NewReader(raw)},
+	Limit:  frame.HeadersOnly,
 }
 
-scanner.Close()
-fmt.Println(scanner.Frame() == nil)
+fmt.Println(s.Scan())
+fmt.Println(len(s.Frame.Payload))
+
+_ = s.Close()
+fmt.Println(s.Frame == nil)
 
 // Output:
+// true
 // 0
 // true
 ```

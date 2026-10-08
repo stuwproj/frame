@@ -25,14 +25,12 @@ import (
 	"sync"
 )
 
-var zeroSlice = make([]byte, 0)
-
 // NewDefaultRetentionPolicy creates a new retention policy with default values
 // based on the given maxRetained size.
 func NewDefaultRetentionPolicy(maxRetained int) *RetentionPolicy {
 	return &RetentionPolicy{
 		Warmup:    3,
-		Threshold: 256,
+		Threshold: 1024,
 		Ratio:     0.5,
 		Max:       maxRetained,
 		Default:   maxRetained / 2,
@@ -67,33 +65,22 @@ func (p *RetentionPolicy) Reusable(capacity, need int) bool {
 }
 
 // Pool is a pool of borrowed values that can be reused to avoid allocations.
-type Pool[HT Header] struct {
-	pol            *RetentionPolicy
-	pool           sync.Pool
-	headerOnlyPool sync.Pool
+type Pool[LT uint16 | uint32, HT PayloadHeader[LT]] struct {
+	pol  *RetentionPolicy
+	pool sync.Pool
 }
 
 // NewPool creates a new pool of borrowed values with exponential payload size buckets.
 // Buckets start at defaultSize and grow by powers of two up to maxRetainedBucketSize.
-func NewPool[HT Header](pol *RetentionPolicy) *Pool[HT] {
-	p := &Pool[HT]{
+func NewPool[LT uint16 | uint32, HT PayloadHeader[LT]](pol *RetentionPolicy) *Pool[LT, HT] {
+	p := &Pool[LT, HT]{
 		pol: pol,
 	}
 
 	p.pool = sync.Pool{
 		New: func() any {
-			return &Frame[HT]{
-				pool:    p,
+			return &Frame[LT, HT]{
 				Payload: make([]byte, 0, pol.Default),
-			}
-		},
-	}
-
-	p.headerOnlyPool = sync.Pool{
-		New: func() any {
-			return &Frame[HT]{
-				pool:    p,
-				Payload: zeroSlice,
 			}
 		},
 	}
@@ -105,45 +92,51 @@ func NewPool[HT Header](pol *RetentionPolicy) *Pool[HT] {
 	return p
 }
 
-// Get a value from the pool that needs to hold at least need bytes of payload.
-// The returned value should be released back to the pool.
-func (p *Pool[HT]) Get(need uint32) *Frame[HT] {
-	if need == 0 {
-		return p.headerOnlyPool.Get().(*Frame[HT]) // nolint:errcheck // safe
+// Get returns a borrowed value from the pool.
+// The value should be returned to the pool with Put when no longer needed.
+func (p *Pool[LT, HT]) Get(n int) *Frame[LT, HT] {
+	if n == 0 {
+		n = p.pol.Default
 	}
 
-	f := p.pool.Get().(*Frame[HT]) // nolint:errcheck // safe
-	n := int(need)
+	f := p.pool.Get().(*Frame[LT, HT]) // nolint:errcheck // safe
 	if !p.pol.Reusable(cap(f.Payload), n) {
-		return &Frame[HT]{
-			pool:    nil, // don't return to pool, too large
+		out := &Frame[LT, HT]{
 			Payload: make([]byte, n),
 		}
-	}
 
-	var zeros HT
-	f.Header = zeros
-	f.Payload = f.Payload[:n]
-	f.pool = p
+		return out
+	}
 
 	return f
 }
 
-// put returns a borrowed value to the pool. The value should not be used after calling Put.
-func (p *Pool[HT]) put(v *Frame[HT]) {
-	if v.pool == nil {
-		return
+// Copy clones src header and payload into a reusable pooled frame.
+// The returned frame should be released with Return when no longer needed.
+func (p *Pool[LT, HT]) Copy(src *Frame[LT, HT]) *Frame[LT, HT] {
+	f := p.pool.Get().(*Frame[LT, HT]) // nolint:errcheck // safe
+	n := len(src.Payload)
+	if !p.pol.Reusable(cap(f.Payload), n) {
+		out := &Frame[LT, HT]{
+			Header:  src.Header,
+			Payload: make([]byte, n),
+		}
+		copy(out.Payload, src.Payload)
+
+		return out
 	}
 
-	if cap(v.Payload) == 0 {
-		p.headerOnlyPool.Put(v)
-		return
-	}
+	f.Header = src.Header
+	f.Payload = append(f.Payload[:0], src.Payload...)
 
+	return f
+}
+
+// Put returns a borrowed value to the pool. The value should not be used after calling Put.
+func (p *Pool[LT, HT]) Put(v *Frame[LT, HT]) {
 	if !p.pol.Retainable(cap(v.Payload)) {
 		return
 	}
 
-	v.pool = nil
 	p.pool.Put(v)
 }

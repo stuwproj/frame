@@ -2,7 +2,10 @@ module github.com/johnknl/frame
 
 go 1.26.8
 
-require github.com/stretchr/testify v1.12.1
+require (
+	github.com/stretchr/testify v1.12.1
+	golang.org/x/exp v0.0.0-20260908205506-85c1c2202aba
+)
 
 require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect

@@ -27,13 +27,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type TestPool = Pool[uint32, TestHeader]
+
+func NewTestPool(defaultSize int) *TestPool {
+	return NewPool[uint32, TestHeader](NewDefaultRetentionPolicy(defaultSize * 2))
+}
+
 func TestNewDefaultRetentionPolicy(t *testing.T) {
 	t.Parallel()
 
 	pol := NewDefaultRetentionPolicy(1024)
 
 	require.Equal(t, 3, pol.Warmup)
-	require.Equal(t, 256, pol.Threshold)
+	require.Equal(t, 1024, pol.Threshold)
 	require.Equal(t, 0.5, pol.Ratio)
 	require.Equal(t, 1024, pol.Max)
 	require.Equal(t, 512, pol.Default)
@@ -74,7 +80,7 @@ func TestRetentionPolicy_Reusable(t *testing.T) {
 	}
 }
 
-func TestPool_Get_UsesReusablePolicy(t *testing.T) {
+func TestPool_Copy_UsesReusablePolicy(t *testing.T) {
 	t.Parallel()
 
 	pol := &RetentionPolicy{
@@ -85,15 +91,15 @@ func TestPool_Get_UsesReusablePolicy(t *testing.T) {
 		Default:   16,
 	}
 
-	p := NewPool[TestHeader](pol)
-	f := p.Get(8)
+	p := NewPool[uint32, TestHeader](pol)
+	src := NewTestFrame(1, []byte("12345678"))
+	f := p.Copy(src)
 
 	require.NotNil(t, f)
 	require.Equal(t, 8, len(f.Payload))
-	require.Nil(t, f.pool)
 }
 
-func TestPool_Get_RetainsWhenReusable(t *testing.T) {
+func TestPool_Copy_RetainsWhenReusable(t *testing.T) {
 	t.Parallel()
 
 	pol := &RetentionPolicy{
@@ -104,10 +110,12 @@ func TestPool_Get_RetainsWhenReusable(t *testing.T) {
 		Default:   16,
 	}
 
-	p := NewPool[TestHeader](pol)
-	f := p.Get(8)
+	p := NewPool[uint32, TestHeader](pol)
+	src := NewTestFrame(2, []byte("12345678"))
+	f := p.Copy(src)
 
 	require.NotNil(t, f)
 	require.Equal(t, 8, len(f.Payload))
-	require.Equal(t, p, f.pool)
+	require.Equal(t, src.Header, f.Header)
+	require.Equal(t, src.Payload, f.Payload)
 }

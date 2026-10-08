@@ -61,6 +61,38 @@ func ReportDomainMetrics(b *testing.B, recordsPerOp int64, bytesPerOp int64) {
 	b.ReportMetric(mbPerSec, "MB/s")
 }
 
+// ReportScannerDomainMetrics reports scanner-focused benchmark metrics using
+// Krecords/s for readability.
+func ReportScannerDomainMetrics(b *testing.B, recordsPerOp int64, bytesPerOp int64) {
+	b.Helper()
+	elapsed := b.Elapsed().Seconds()
+	if elapsed <= 0 {
+		return
+	}
+
+	opsPerSec := float64(b.N) / elapsed
+	recordsPerSec := float64(recordsPerOp) * opsPerSec
+	mRecordsPerSec := recordsPerSec / 1_000_000.0
+	mbPerSec := float64(bytesPerOp) * opsPerSec / (1024.0 * 1024.0)
+	b.ReportMetric(mRecordsPerSec, "m/records/s")
+	b.ReportMetric(mbPerSec, "MB/s")
+}
+
+// ReportSeekDomainMetrics reports seek-focused benchmark metrics.
+func ReportSeekDomainMetrics(b *testing.B, seeksPerOp int64, bytesPerOp int64) {
+	b.Helper()
+	elapsed := b.Elapsed().Seconds()
+	if elapsed <= 0 {
+		return
+	}
+
+	opsPerSec := float64(b.N) / elapsed
+	seeksPerSec := float64(seeksPerOp) * opsPerSec
+	mbPerSec := float64(bytesPerOp) * opsPerSec / (1024.0 * 1024.0)
+	b.ReportMetric(seeksPerSec, "seeks/s")
+	b.ReportMetric(mbPerSec, "MB/s")
+}
+
 // BenchmarkLabelInt generates a benchmark label string in the format "prefix=n" for reporting purposes.
 func BenchmarkLabelInt(prefix string, n int) string {
 	return prefix + "=" + strconv.Itoa(n)

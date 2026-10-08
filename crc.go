@@ -23,49 +23,37 @@ package frame
 
 import (
 	"hash/crc32"
-	"math"
 )
 
-var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
+// CRC32cTable is the CRC32C (Castagnoli) table used for checksum calculations.
+var CRC32cTable = crc32.MakeTable(crc32.Castagnoli)
+
+// UpdateCRC32C updates the CRC32C checksum with the given bytes.
+func UpdateCRC32C(sum uint32, b []byte) uint32 {
+	return crc32.Update(sum, CRC32cTable, b)
+}
 
 // CRC32C validates and computes frame checksums using CRC32C (Castagnoli).
-type CRC32C[HT Header] struct {
-}
-
-// NewCRC32C creates a new CRC32C validator.
-func NewCRC32C[HT Header]() *CRC32C[HT] {
-	return &CRC32C[HT]{}
-}
+type CRC32C[HT ChecksumHeader] struct{}
 
 // Validate checks if the frame header is valid for the given payload
-func (v *CRC32C[HT]) Validate(f *Frame[HT]) error {
-	size := len(f.Payload)
-	if size > math.MaxUint32 {
-		// can't check the payload length if it exceeds the maximum uint32 value,
-		// since PayloadLength() returns a uint32
-		return ErrPayloadTooLarge
+func (v *CRC32C[HT]) Validate(h *HT, p []byte) error {
+	if p == nil {
+		// ignore header only validation
+		return nil
 	}
 
-	h := f.Header
-	if h.PayloadLength() != uint32(size) {
-		return ErrInvalidFrameHeader
-	}
-
-	if h.Checksum() != v.Sum(f) {
+	if (*h).Checksum() != Checksum(h, p, 0) {
 		return ErrInvalidChecksum
 	}
 
 	return nil
 }
 
-// UpdateCRC32C updates the CRC32C checksum with the given bytes.
-func UpdateCRC32C(sum uint32, b []byte) uint32 {
-	return crc32.Update(sum, crc32cTable, b)
-}
-
-// Sum computes the CRC32C checksum for a frame.
-func (v *CRC32C[HT]) Sum(f *Frame[HT]) uint32 {
-	b := headerBytes(&f.Header)
-	sum := crc32.Update(0, crc32cTable, b[:f.Header.ChecksumBytes()])
-	return crc32.Update(sum, crc32cTable, f.Payload)
+// Checksum updates passed checksum with frame checksum.
+func Checksum[HT ChecksumHeader](h *HT, p []byte, sum uint32) uint32 {
+	b := HeaderBytes(h)
+	sum = crc32.Update(sum, CRC32cTable, b[:(*h).ChecksumBytes()])
+	sum = crc32.Update(sum, CRC32cTable, p)
+	return sum
 }

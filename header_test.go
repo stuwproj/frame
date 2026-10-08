@@ -21,21 +21,23 @@
 
 package frame
 
-import (
-	"encoding/binary"
-)
+import "encoding/binary"
 
 const (
 	// TestHeaderSize is the size of a frame header in bytes
 	TestHeaderSize = 16
+
+	// TestHeaderStride is the index stride of a frame header
+	TestHeaderStride uint16 = 2
 )
 
 // TestHeader is a 16-byte big-endian encoded array, representing a frame header.
 //
 // offset  size  field
 // 0       4     payload length
-// 4       4     meta
-// 8       4     reserved
+// 4       2     index stride
+// 6       4     meta
+// 10      2     reserved
 // 12      4     checksum
 type TestHeader [16]byte
 
@@ -49,8 +51,16 @@ func (h TestHeader) PayloadLength() uint32 {
 	return binary.BigEndian.Uint32(h[0:4])
 }
 
-func (h TestHeader) Index() uint32 {
-	return binary.BigEndian.Uint32(h[4:8])
+func (h TestHeader) IndexStride() uint16 {
+	return binary.BigEndian.Uint16(h[4:6])
+}
+
+func (h TestHeader) IsContainer() bool {
+	return false
+}
+
+func (h TestHeader) Meta() uint32 {
+	return binary.BigEndian.Uint32(h[6:10])
 }
 
 func (h TestHeader) Checksum() uint32 {
@@ -66,12 +76,14 @@ func (h TestHeader) ChecksumBytes() int {
 }
 
 // NewTestHeader constructs a new TestHeader
-func NewTestHeader(m uint32, c uint32, payload []byte) TestHeader {
+func NewTestHeader(m uint32, payload []byte) TestHeader {
 	var h TestHeader
 
 	binary.BigEndian.PutUint32(h[0:4], uint32(len(payload)))
-	binary.BigEndian.PutUint32(h[4:8], m)
-	binary.BigEndian.PutUint32(h[12:16], c)
+	binary.BigEndian.PutUint16(h[4:6], TestHeaderStride)
+	binary.BigEndian.PutUint32(h[6:10], m)
+
+	h.SetChecksum(UpdateCRC32C(UpdateCRC32C(0, h[0:h.ChecksumBytes()]), payload))
 
 	return h
 }

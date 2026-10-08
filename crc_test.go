@@ -29,6 +29,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func BenchmarkCRC32C_Validate(b *testing.B) {
+	const size = 1024
+	payload := testutil.BenchmarkPayload(size)
+	f := NewTestFrame(0, payload)
+	crc := &CRC32C[TestHeader]{}
+
+	b.SetBytes(int64(size + TestHeaderSize))
+	b.ResetTimer()
+
+	for b.Loop() {
+		if err := crc.Validate(&f.Header, f.Payload); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // FuzzHeader_Validate mutates encoded header fields and payload bytes to
 // validate checksum/length enforcement.
 func FuzzHeader_Validate(f *testing.F) {
@@ -40,19 +56,19 @@ func FuzzHeader_Validate(f *testing.F) {
 		// bound payload size to keep fuzz data properly distributed
 		payload = testutil.BoundedFuzzBytes(payload, 1<<20, idx^declaredLen)
 
-		crc := NewCRC32C[TestHeader]()
+		crc := &CRC32C[TestHeader]{}
 
 		f := NewTestFrame(idx, payload)
 
 		// freshly generated headers must validate against their source payload
-		require.NoError(t, crc.Validate(f))
+		require.NoError(t, crc.Validate(&f.Header, f.Payload))
 
 		// mutating the declared length should fail when it no longer matches payload
 		mutatedHeader := f.Header[:]
 		binary.BigEndian.PutUint32(mutatedHeader[0:4], declaredLen)
 		f.Header = TestHeader(mutatedHeader)
 
-		err := crc.Validate(f)
+		err := crc.Validate(&f.Header, f.Payload)
 
 		if declaredLen != uint32(len(payload)) {
 			require.Error(t, err)
@@ -65,7 +81,7 @@ func FuzzHeader_Validate(f *testing.F) {
 			mutatedPayload[0] ^= 0x01
 			f.Payload = mutatedPayload
 
-			require.Error(t, crc.Validate(f))
+			require.Error(t, crc.Validate(&f.Header, f.Payload))
 		}
 	})
 }

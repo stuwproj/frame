@@ -22,350 +22,316 @@
 package frame
 
 import (
-	"errors"
+	"fmt"
 	"io"
 )
 
-var errSeekWithoutReaderAt = errors.New("seek requires ReaderAt")
+const (
+	// MaxPayloadSize means "no read limit"
+	MaxPayloadSize = ^uint32(0)
 
-type discardReader interface {
-	Discard(n int) (discarded int, err error)
-}
+	// HeadersOnly means "read only the header"
+	HeadersOnly = 0
 
-// Validator validates a decoded frame.
-type Validator[HT Header] interface {
-	Validate(f *Frame[HT]) error
-}
+	// DefaultPayloadSize is the allocation of the stratch payload
+	// When a pool is used, the pool retention policy default
+	// will be used instead.
+	DefaultPayloadSize = 16 << 10 // 16 KiB
+)
 
-// ScannerOption configures scanner behavior.
-type ScannerOption[HT IndexedHeader] func(*Scanner[HT])
-
-// WithScannerValidator sets the frame validator.
-func WithScannerValidator[HT IndexedHeader](v Validator[HT]) ScannerOption[HT] {
-	return func(s *Scanner[HT]) {
-		s.v = v
-	}
-}
-
-// WithScannerOffset sets the starting byte offset.
-func WithScannerOffset[HT IndexedHeader](offset int64) ScannerOption[HT] {
-	return func(s *Scanner[HT]) {
-		s.offset = offset
-	}
-}
-
-// WithScannerIndex sets the expected index for the first scanned frame.
-func WithScannerIndex[HT IndexedHeader](index uint32) ScannerOption[HT] {
-	return func(s *Scanner[HT]) {
-		s.nextIdx = index
-	}
-}
-
-// Scanner scans frames sequentially from a reader and validates frame indexes.
-type Scanner[HT IndexedHeader] struct {
-	v       Validator[HT]
-	err     error
-	r       *Reader[HT]
-	ra      *ReaderAt[HT]
-	stream  io.Reader
-	seeker  io.Seeker
-	f       *Frame[HT]
-	offset  int64
-	nextIdx uint32
-}
-
-// NewScanner creates a new scanner using the provided reader and options.
-// Defaults are offset 0, index 0, and no validator.
-func NewScanner[HT IndexedHeader](
-	stream io.Reader,
-	pool *Pool[HT],
-	limit PayloadReadLimit,
-	options ...ScannerOption[HT],
-) *Scanner[HT] {
-	s := &Scanner[HT]{
-		r:      NewReader[HT](stream, pool, limit),
-		stream: stream,
-	}
-	if ra, ok := stream.(io.ReaderAt); ok {
-		s.ra = NewReaderAt[HT](ra, pool, limit)
-	}
-	if seeker, ok := stream.(io.Seeker); ok {
-		s.seeker = seeker
-	}
-
-	for _, option := range options {
-		option(s)
-	}
-
-	if s.offset < 0 {
-		s.err = errors.New("negative offset")
-		return s
-	}
-
-	if s.ra == nil && s.offset > 0 {
-		if err := s.seekStreamToOffset(s.offset); err != nil {
-			return s
-		}
-	}
-
-	return s
+// Scanner scans frames sequentially incrementing the logical index by the stride of each frame.
+type Scanner[LT uint16 | uint32, HT ScannerHeader[LT]] struct {
+	err            error
+	Loader         Loader[LT, HT]
+	Validator      Validator[LT, HT]
+	Header         HT
+	Frame          *Frame[LT, HT]
+	Index          *Index
+	NextOffset     int64
+	LastOffset     int64
+	headerSize     int
+	Limit          uint32
+	LastIndex      uint32
+	NextIndex      uint32
+	inited         bool
+	skipHeaderScan bool
 }
 
 // Scan advances the scanner to the next frame.
-func (s *Scanner[HT]) Scan() bool {
-	if s.err != nil {
-		return false
-	}
-
-	if s.f != nil {
-		s.f.Return()
-		s.f = nil
-	}
-
-	f, err := s.readFrameAtOffset(s.offset)
-	if err != nil {
-		if errors.Is(err, io.EOF) {
-			return false
-		}
-
-		s.err = err
-		return false
-	}
-
-	idx := f.Header.Index()
-	if idx != s.nextIdx {
-		f.Return()
-		s.err = ErrInvalidFrameIndex
-		return false
-	}
-
-	if s.v != nil {
-		err = s.v.Validate(f)
-		if err != nil {
-			f.Return()
+func (s *Scanner[LT, HT]) Scan() bool {
+	if !s.inited {
+		if err := s.Init(); err != nil {
 			s.err = err
 			return false
 		}
 	}
 
-	s.offset += int64(s.r.headerSize) + int64(f.Header.PayloadLength())
-	s.nextIdx++
-	s.f = f
+	if s.err != nil {
+		return false
+	}
+
+	s.LastOffset = s.NextOffset
+
+	if !s.skipHeaderScan {
+		if _, err := s.readHeader(); err != nil {
+			s.err = err
+			return false
+		}
+	}
+
+	stride := uint32(s.Header.IndexStride())
+
+	if _, err := s.readPayload(); err != nil {
+		s.err = err
+		return false
+	}
+
+	s.LastIndex = s.NextIndex
+	s.NextIndex += stride
+	s.NextOffset += int64(s.headerSize) + int64(s.Header.PayloadLength())
 
 	return true
 }
 
-// SeekOffset repositions the scanner to offset and clears the current frame and error.
-// The expected frame index is unchanged.
-func (s *Scanner[HT]) SeekOffset(offset int64) {
-	if s.f != nil {
-		s.f.Return()
-		s.f = nil
-	}
-	if offset < 0 {
-		s.err = errors.New("negative offset")
-		return
-	}
-
-	if s.ra == nil {
-		if err := s.seekStreamToOffset(offset); err != nil {
-			return
+// SeekIndex seeks the scanner to the frame with the given index.
+// Note that this will consume the header of the frame at the
+// target index, but the payload will not be read until the next Scan() call.
+// LastOffset() and NextOffset() return positions of the start of headers,
+// and may not always correspond to the offset of the reader.
+// When reading/validating the header fails, the scanner will be left in an error state,
+// Scan() will return false, and Err() will return the same error as SeekIndex().
+func (s *Scanner[LT, HT]) SeekIndex(target uint32) error {
+	if !s.inited {
+		if err := s.Init(); err != nil {
+			return err
 		}
-
-		return
 	}
 
-	s.offset = offset
-	s.err = nil
-}
-
-// Seek repositions the scanner using io.Seeker semantics.
-func (s *Scanner[HT]) Seek(offset int64, whence int) (int64, error) {
-	base := int64(0)
-
-	switch whence {
-	case io.SeekStart:
-		base = 0
-	case io.SeekCurrent:
-		base = s.offset
-	default:
-		return 0, errors.New("unsupported whence")
-	}
-
-	next := base + offset
-	if next < 0 {
-		return 0, errors.New("negative offset")
-	}
-
-	s.SeekOffset(next)
-
-	return s.offset, nil
-}
-
-// SeekIndex scans forward from the current offset until index is found.
-// On success, the scanner is positioned so the next Scan reads that frame.
-func (s *Scanner[HT]) SeekIndex(index uint32) error {
 	if s.err != nil {
 		return s.err
 	}
 
-	if s.f != nil {
-		s.f.Return()
-		s.f = nil
+	if target == s.NextIndex {
+		return nil
 	}
 
-	offset := s.offset
-
-	for {
-		f, err := s.readFrameAtOffset(offset)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return io.EOF
-			}
-
-			s.err = err
-			return err
+	if target < s.NextIndex {
+		if _, err := s.Loader.Seek(0, io.SeekStart); err != nil {
+			return s.error(err)
 		}
 
-		if s.v != nil {
-			err = s.v.Validate(f)
+		// s.Header = *new(HT)
+		s.NextIndex = 0
+		s.LastIndex = 0
+	}
+
+	if s.Index != nil {
+		idx, off, found := s.Index.ForFrameIndex(target)
+		if found {
+			err := s.Seek(idx, off)
 			if err != nil {
-				f.Return()
-				s.err = err
 				return err
 			}
+
+			s.NextIndex = idx
+			s.NextOffset = off
+		}
+	}
+
+	var (
+		n   int
+		err error
+	)
+
+	nextIdx := s.NextIndex
+	lastIdx := s.LastIndex
+
+	for {
+		if n, err = s.readHeader(); err != nil {
+			return s.error(err)
 		}
 
-		idx := f.Header.Index()
-		if idx == index {
-			f.Return()
-			s.offset = offset
-			s.nextIdx = index
+		// Flag to skip the header scan on the next Scan() call,
+		// since we already read the header here
+		// This will be set to false again after the payload
+		// is read in the next Scan() call
+		s.skipHeaderScan = true
+
+		stride := uint32(s.Header.IndexStride())
+		payloadLen := int64(s.Header.PayloadLength())
+
+		if payloadLen == 0 {
+			// validate the header
+			if err = s.validate(); err != nil {
+				return s.error(err)
+			}
+
+			if nextIdx+stride > target {
+				s.NextIndex = nextIdx
+				s.LastIndex = lastIdx
+
+				return nil
+			}
+
+			lastIdx = nextIdx
+			nextIdx += stride
+
+			s.LastOffset = s.NextOffset
+			s.NextOffset += int64(n)
+
+			continue
+		}
+
+		if nextIdx+stride > target {
+			s.NextIndex = nextIdx
+			s.LastIndex = lastIdx
+
 			return nil
 		}
 
-		if idx > index {
-			f.Return()
-			s.err = ErrInvalidFrameIndex
-			return s.err
-		}
+		lastIdx = nextIdx
+		nextIdx += stride
 
-		offset += int64(s.r.headerSize) + int64(f.Header.PayloadLength())
-		f.Return()
-	}
-}
+		s.LastOffset = s.NextOffset
 
-// Offset returns the scanner's current byte offset.
-// This is the offset where the next Scan starts.
-func (s *Scanner[HT]) Offset() int64 {
-	return s.offset
-}
-
-// Index returns the expected frame index for the next Scan.
-func (s *Scanner[HT]) Index() uint32 {
-	return s.nextIdx
-}
-
-// Frame returns the frame loaded by the most recent successful Scan call.
-func (s *Scanner[HT]) Frame() *Frame[HT] {
-	return s.f
-}
-
-// Close returns the currently held frame to its pool.
-func (s *Scanner[HT]) Close() {
-	if s.f == nil {
-		return
-	}
-
-	s.f.Return()
-	s.f = nil
-}
-
-// Err returns the first non-EOF error encountered by Scan.
-func (s *Scanner[HT]) Err() error {
-	return s.err
-}
-
-func (s *Scanner[HT]) readFrameAtOffset(offset int64) (*Frame[HT], error) {
-	if s.ra != nil {
-		return s.ra.ReadAt(offset)
-	}
-
-	if offset != s.offset {
-		if err := s.seekStreamToOffset(offset); err != nil {
-			return nil, err
+		if s.NextOffset, err = s.Loader.Seek(payloadLen, io.SeekCurrent); err != nil {
+			return s.error(err)
 		}
 	}
-
-	return s.r.Read()
 }
 
-func (s *Scanner[HT]) seekStreamToOffset(offset int64) error {
-	if s.seeker != nil {
-		_, err := s.seeker.Seek(offset, io.SeekStart)
-		if err != nil {
-			s.err = err
+// Seek calls Seek() on the underlying reader and updates the scanner's offset
+// and index. The caller is responsible for ensuring that the offset and index
+// are a valid position in the stream. Next Scan() will attempt to read the frame
+// at the provided offset using the provided index for sequencing.
+func (s *Scanner[LT, HT]) Seek(idx uint32, offset int64) error {
+	if !s.inited {
+		if err := s.Init(); err != nil {
 			return err
 		}
-
-		s.offset = offset
-		s.err = nil
-		return nil
 	}
 
-	if offset < s.offset {
-		s.err = errSeekWithoutReaderAt
-		return s.err
-	}
-
-	if offset == s.offset {
-		s.err = nil
-		return nil
-	}
-
-	err := discardN(s.stream, offset-s.offset)
+	off, err := s.Loader.Seek(offset, io.SeekStart)
 	if err != nil {
-		s.err = err
 		return err
 	}
 
-	s.offset = offset
+	if off != offset {
+		return fmt.Errorf("seek to offset %d returned %d: %w", s.NextOffset, off, io.ErrUnexpectedEOF)
+	}
+
+	s.LastIndex = 0
+	s.LastOffset = 0
+
+	s.NextOffset = off
+	s.NextIndex = idx
+
+	// clear any previous error state, since we have
+	// successfully seeked to a new position.
 	s.err = nil
 
 	return nil
 }
 
-func discardN(stream io.Reader, n int64) error {
-	if n == 0 {
-		return nil
+// Close releases scanner-owned scratch payload memory.
+// Close() does not close the underlying reader.
+func (s *Scanner[LT, HT]) Close() error {
+	if s.Frame != nil {
+		s.Frame.Payload = nil
+		s.Frame = nil
 	}
 
-	if dr, ok := stream.(discardReader); ok {
-		const maxInt = int(^uint(0) >> 1)
-		remaining := n
+	return nil
+}
 
-		for remaining > 0 {
-			chunk := maxInt
-			if remaining < int64(maxInt) {
-				chunk = int(remaining)
-			}
+// Err returns any non-recoverable scanner error.
+func (s *Scanner[LT, HT]) Err() error {
+	return s.err
+}
 
-			discarded, err := dr.Discard(chunk)
-			remaining -= int64(discarded)
+// Reset the scanner state to the initial state.
+func (s *Scanner[LT, HT]) Reset() {
+	s.err = nil
+	s.LastOffset = 0
+	s.NextOffset = 0
+	s.LastIndex = 0
+	s.NextIndex = 0
+	s.skipHeaderScan = false
+}
 
-			if err != nil {
-				return err
-			}
-
-			if discarded == 0 {
-				return io.ErrNoProgress
-			}
+func (s *Scanner[LT, HT]) validate() error {
+	if s.Validator != nil {
+		var p []byte
+		if s.Frame != nil {
+			p = s.Frame.Payload
 		}
 
+		if err := s.Validator.Validate(&s.Header, p); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (s *Scanner[LT, HT]) readHeader() (int, error) {
+	return s.Loader.ReadHeader()
+}
+
+func (s *Scanner[LT, HT]) readPayload() (n int, err error) {
+	s.skipHeaderScan = false
+	n, err = s.Loader.ReadPayload()
+	if err != nil {
+		s.err = err
+		return 0, err
+	}
+
+	// validate the frame after reading the payload
+	if err = s.validate(); err != nil {
+		return 0, err
+	}
+
+	return n, err
+}
+
+// Init initializes the scanner.
+// If you do not call Init() explicitly, it will be called automatically on the first Scan() or SeekIndex() call.
+func (s *Scanner[LT, HT]) Init() error {
+	if s.inited {
 		return nil
 	}
 
-	_, err := io.CopyN(io.Discard, stream, n)
+	s.inited = true
+
+	if s.Frame == nil {
+		s.Frame = &Frame[LT, HT]{
+			Payload: make([]byte, 0, DefaultPayloadSize),
+		}
+	}
+
+	if s.Loader == nil {
+		return fmt.Errorf("nil loader")
+	}
+
+	s.headerSize = len(s.Header)
+	s.Loader.Bind(&s.Header, s.Frame, s.Limit)
+
+	off, err := s.Loader.Seek(s.NextOffset, io.SeekStart)
+	if err != nil {
+		return err
+	}
+
+	if off != s.NextOffset {
+		return fmt.Errorf("seek to offset %d returned %d: %w", s.NextOffset, off, io.ErrUnexpectedEOF)
+	}
+
+	s.LastOffset = 0
+
+	return nil
+}
+
+func (s *Scanner[LT, HT]) error(err error) error {
+	s.err = err
 
 	return err
 }

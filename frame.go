@@ -21,41 +21,24 @@
 
 package frame
 
-import "bytes"
+// Validator validates a decoded frame.
+type Validator[LT uint16 | uint32, HT PayloadHeader[LT]] interface {
+	// Validate validates the frame header and payload.
+	// The validator may be passed a nil payload if only the header was
+	// read. Any error returned by Validate will be returned by the scanner.
+	Validate(*HT, []byte) error
+}
 
 // Frame is a wrapper around a byte slice that is borrowed from a pool.
-type Frame[HT Header] struct {
+type Frame[LT uint16 | uint32, HT PayloadHeader[LT]] struct {
 	Header  HT
-	pool    *Pool[HT]
 	Payload []byte
 }
 
-// Clone copies the borrowed value into a new slice and returns it along with the header.
-// The frame is returned to the pool after cloning so it should not be used afterwards.
-func (f *Frame[HT]) Clone() (HT, []byte) {
-	h := f.Header
-	payload := bytes.Clone(f.Payload)
-
-	f.Return() // TODO: this may be a bit unexpected although documented
-
-	return h, payload
-}
-
 // Set sets the header and value of the borrowed value.
-func (f *Frame[HT]) Set(h HT, p []byte) *Frame[HT] {
+func (f *Frame[LT, HT]) Set(h HT, p []byte) *Frame[LT, HT] {
 	f.Header = h
 	f.Payload = append(f.Payload[:0], p...)
 
 	return f
-}
-
-// Return the borrowed value to the pool.
-// It should be called exactly once in the same context where the value
-// was obtained, and the value should not be used after calling it.
-func (f *Frame[HT]) Return() {
-	if f.pool == nil {
-		return
-	}
-
-	f.pool.put(f)
 }

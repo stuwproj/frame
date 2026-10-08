@@ -1,2 +1,5 @@
 .tmp
+_metrics/**/*-dirty.*
+*.tmp
 *.test
+*.prof
