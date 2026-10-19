@@ -304,8 +304,13 @@ func (s *Scanner[LT, HT]) Init() error {
 	s.inited = true
 
 	if s.Frame == nil {
+		payloadCap := 0
+		if s.Limit != HeadersOnly {
+			payloadCap = DefaultPayloadSize
+		}
+
 		s.Frame = &Frame[LT, HT]{
-			Payload: make([]byte, 0, DefaultPayloadSize),
+			Payload: make([]byte, 0, payloadCap),
 		}
 	}
 

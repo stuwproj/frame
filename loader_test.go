@@ -73,6 +73,63 @@ func TestSliceLoader_ReadPayload(t *testing.T) {
 	require.Equal(t, &base[16], &f.Payload[0])
 }
 
+func TestSliceLoader_ReadPayload_Copy(t *testing.T) {
+	payload := []byte("hello")
+	fr := NewTestFrame(1, payload)
+	raw := append(fr.Header[:], fr.Payload...)
+
+	var h mmapTestHeader
+	f := &Frame[uint32, mmapTestHeader]{}
+	mr := &SliceLoader[uint32, mmapTestHeader]{Data: raw, Copy: true}
+	mr.Bind(&h, f, 1024)
+
+	_, err := mr.ReadHeader()
+	require.NoError(t, err)
+
+	n, err := mr.ReadPayload()
+	require.NoError(t, err)
+	require.Equal(t, len(payload), n)
+	require.Equal(t, payload, f.Payload)
+
+	require.NotSame(t, &raw[16], &f.Payload[0])
+	raw[16] = 'H'
+	require.Equal(t, []byte("hello"), f.Payload)
+}
+
+func TestSliceLoader_ReadPayload_PartialHeaderOnlyReturnsEOF(t *testing.T) {
+	payload := []byte("hello")
+	fr := NewTestFrame(1, payload)
+	raw := append(fr.Header[:], fr.Payload[:2]...)
+
+	var h mmapTestHeader
+	f := &Frame[uint32, mmapTestHeader]{}
+	mr := &SliceLoader[uint32, mmapTestHeader]{Data: raw}
+	mr.Bind(&h, f, 0)
+
+	_, err := mr.ReadHeader()
+	require.NoError(t, err)
+
+	_, err = mr.ReadPayload()
+	require.ErrorIs(t, err, io.EOF)
+}
+
+func TestSliceLoader_ReadPayload_PartialPayloadReadReturnsUnexpectedEOF(t *testing.T) {
+	payload := []byte("hello")
+	fr := NewTestFrame(1, payload)
+	raw := append(fr.Header[:], fr.Payload[:2]...)
+
+	var h mmapTestHeader
+	f := &Frame[uint32, mmapTestHeader]{}
+	mr := &SliceLoader[uint32, mmapTestHeader]{Data: raw}
+	mr.Bind(&h, f, uint32(len(payload)))
+
+	_, err := mr.ReadHeader()
+	require.NoError(t, err)
+
+	_, err = mr.ReadPayload()
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+}
+
 func TestSeekDiscardReader_Seek(t *testing.T) {
 	t.Run("invalid whence", func(t *testing.T) {
 		d := &SeekDiscardReader{Reader: bytes.NewReader([]byte("abc"))}
@@ -211,7 +268,17 @@ func BenchmarkLoader_ReadPayload(b *testing.B) {
 		}
 		b.Cleanup(func() { _ = region.Close() })
 
-		benchmarkLoaderMMap(b, region, frameCount, payloadSize, int64(len(raw)))
+		benchmarkLoaderMMap(b, region, frameCount, payloadSize, int64(len(raw)), false)
+	})
+
+	b.Run("mmap_copy", func(b *testing.B) {
+		region, err := OpenMMapRegion(fh)
+		if err != nil {
+			b.Fatal(err)
+		}
+		b.Cleanup(func() { _ = region.Close() })
+
+		benchmarkLoaderMMap(b, region, frameCount, payloadSize, int64(len(raw)), true)
 	})
 }
 
@@ -277,7 +344,7 @@ func benchmarkLoaderMMapReadAtCopy(b *testing.B, path string, frameCount int, pa
 	testutil.ReportDomainMetrics(b, int64(frameCount), bytesPerOp)
 }
 
-func benchmarkLoaderMMap(b *testing.B, region *MMapRegion, frameCount int, payloadSize int, bytesPerOp int64) {
+func benchmarkLoaderMMap(b *testing.B, region *MMapRegion, frameCount int, payloadSize int, bytesPerOp int64, copyPayload bool) {
 	var h mmapTestHeader
 	fm := &Frame[uint32, mmapTestHeader]{Payload: make([]byte, 0, payloadSize)}
 
@@ -285,7 +352,7 @@ func benchmarkLoaderMMap(b *testing.B, region *MMapRegion, frameCount int, paylo
 	b.ResetTimer()
 
 	for b.Loop() {
-		fr := &SliceLoader[uint32, mmapTestHeader]{Data: region.Bytes()}
+		fr := &SliceLoader[uint32, mmapTestHeader]{Data: region.Bytes(), Copy: copyPayload}
 		fr.Bind(&h, fm, uint32(payloadSize))
 
 		_, err := fr.Seek(0, io.SeekStart)

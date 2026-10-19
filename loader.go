@@ -181,16 +181,15 @@ func (s *ReaderLoader[LT, HT]) ReadPayload() (n int, err error) {
 
 // SliceLoader provides zero-copy payload reads over mapped bytes.
 type SliceLoader[LT uint16 | uint32, HT PayloadHeader[LT]] struct {
-	h *HT
-	f *Frame[LT, HT]
-
-	// Data is the underlying mapped bytes.
-	Data []byte
-
+	h          *HT
+	f          *Frame[LT, HT]
+	Data       []byte
 	headerView []byte
 	off        int64
 	headerSize int
 	limit      uint32
+	// Copy copies payload bytes into Frame.Payload instead of re-slicing Data.
+	Copy       bool
 }
 
 // Bind updates the header/frame/limit pointers used by this loader.
@@ -251,6 +250,10 @@ func (s *SliceLoader[LT, HT]) ReadPayload() (int, error) {
 
 	endFull := s.off + int64(payloadLen)
 	if endFull > int64(len(s.Data)) {
+		if s.limit == 0 {
+			return 0, io.EOF
+		}
+
 		return 0, io.ErrUnexpectedEOF
 	}
 
@@ -265,7 +268,17 @@ func (s *SliceLoader[LT, HT]) ReadPayload() (int, error) {
 		return 0, fmt.Errorf("mmap payload window out of bounds")
 	}
 
-	s.f.Payload = s.Data[s.off:endRead]
+	if s.Copy {
+		if cap(s.f.Payload) < n || (n > 1024 && cap(s.f.Payload) > n<<4) {
+			s.f.Payload = make([]byte, n)
+		}
+
+		s.f.Payload = s.f.Payload[:n]
+		copy(s.f.Payload, s.Data[s.off:endRead])
+	} else {
+		s.f.Payload = s.Data[s.off:endRead]
+	}
+
 	s.off = endFull
 
 	return n, nil
