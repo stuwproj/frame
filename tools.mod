@@ -6,7 +6,7 @@ tool (
 	github.com/go-gremlins/gremlins/cmd/gremlins
 	github.com/golangci/golangci-lint/v2/cmd/golangci-lint
 	github.com/google/addlicense
-	github.com/johnknl/alog/tools/cmd/docsync
+	stuw.net/alog/tools/cmd/docsync
 	github.com/vektra/mockery/v2
 	golang.org/x/perf/cmd/benchstat
 	golang.org/x/tools/go/analysis/passes/fieldalignment/cmd/fieldalignment
@@ -131,7 +131,7 @@ require (
 	github.com/jgautheron/goconst v1.11.0 // indirect
 	github.com/jinzhu/copier v0.4.0 // indirect
 	github.com/jjti/go-spancheck v0.6.5 // indirect
-	github.com/johnknl/alog/tools v0.0.0-20260905162208-522cb3a7a00a // indirect
+	stuw.net/alog/tools v0.0.0-20260905162208-522cb3a7a00a // indirect
 	github.com/julz/importas v0.2.0 // indirect
 	github.com/karamaru-alpha/copyloopvar v1.2.2 // indirect
 	github.com/kisielk/errcheck v1.20.0 // indirect

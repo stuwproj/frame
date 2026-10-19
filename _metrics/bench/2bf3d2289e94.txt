@@ -1,6 +1,6 @@
 goos: linux
 goarch: amd64
-pkg: github.com/johnknl/frame
+pkg: stuw.net/frame
 cpu: AMD Ryzen 9 5950X 16-Core Processor            
 BenchmarkCRC32C_Sum-32         	 9930022	       108.7 ns/op	9564.37 MB/s	      16 B/op	       1 allocs/op
 BenchmarkCRC32C_Sum-32         	 9412124	       110.6 ns/op	9401.07 MB/s	      16 B/op	       1 allocs/op
@@ -45,6 +45,6 @@ BenchmarkScanner_Scan/at_offset-32                     	   48006	     24793 ns/o
 BenchmarkScanner_Scan/at_offset-32                     	   42408	     23987 ns/op	4396.93 MB/s	       144.0 bytes/record	  32017431 records/s	       0 B/op	       0 allocs/op
 BenchmarkScanner_Scan/at_offset-32                     	   50644	     24772 ns/op	4257.51 MB/s	       144.0 bytes/record	  31002241 records/s	       0 B/op	       0 allocs/op
 PASS
-ok  	github.com/johnknl/frame	63.905s
-?   	github.com/johnknl/frame/internal/mocks	[no test files]
-?   	github.com/johnknl/frame/internal/testutil	[no test files]
+ok  	stuw.net/frame	63.905s
+?   	stuw.net/frame/internal/mocks	[no test files]
+?   	stuw.net/frame/internal/testutil	[no test files]

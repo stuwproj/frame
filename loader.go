@@ -189,7 +189,7 @@ type SliceLoader[LT uint16 | uint32, HT PayloadHeader[LT]] struct {
 	headerSize int
 	limit      uint32
 	// Copy copies payload bytes into Frame.Payload instead of re-slicing Data.
-	Copy       bool
+	Copy bool
 }
 
 // Bind updates the header/frame/limit pointers used by this loader.

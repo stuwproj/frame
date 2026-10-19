@@ -29,7 +29,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/johnknl/frame"
+	"stuw.net/frame"
 )
 
 const exampleHeaderSize = 16

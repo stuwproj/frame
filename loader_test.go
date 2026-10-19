@@ -30,9 +30,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/johnknl/frame/internal/testutil"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/exp/mmap"
+	"stuw.net/frame/internal/testutil"
 )
 
 type mmapTestHeader [16]byte

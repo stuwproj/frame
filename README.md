@@ -2,6 +2,12 @@
 
 Generic utilities for scanning, checksumming and pooling binary frames.
 
+## Installation
+
+```
+go get stuw.net/frame
+```
+
 ## Scanning Performance
 
 Below a sample of the benchmarks using 16K frames.
@@ -13,7 +19,7 @@ real world conditions payload sizes may fluctuate and cause extra allocs.
 ```
 goos: linux
 goarch: amd64
-pkg: github.com/johnknl/frame
+pkg: stuw.net/frame
 cpu: AMD Ryzen 9 5950X 16-Core Processor
 BenchmarkScanner_SeekIndex
 BenchmarkScanner_SeekIndex/default
@@ -45,7 +51,7 @@ BenchmarkScanner_Scan/mmap_zero_copy/with_validation/16384-32                242
 BenchmarkScanner_Scan/mmap_zero_copy/at_offset/16384
 BenchmarkScanner_Scan/mmap_zero_copy/at_offset/16384-32                    17079             78944 ns/op        760770.33 MB/s          48.64 m/records/s              0 B/op          0 allocs/op
 PASS
-ok      github.com/johnknl/frame        20.411s
+ok      stuw.net/frame        20.411s
 ```
 
 ### Scanning Large Streams
@@ -75,7 +81,7 @@ embedding logical frames, or striping.
 <!-- EXAMPLE:ExampleNewPool:start -->
 ## NewPool
 
-Go reference: [NewPool](https://pkg.go.dev/github.com/johnknl/frame#NewPool).
+Go reference: [NewPool](https://pkg.go.dev/stuw.net/frame#NewPool).
 
 The following example shows borrowing, copying and returning pooled frames.
 
@@ -108,7 +114,7 @@ pool.Put(again)
 
 ### Validate
 
-Go reference: [CRC32C.Validate](https://pkg.go.dev/github.com/johnknl/frame#CRC32C.Validate).
+Go reference: [CRC32C.Validate](https://pkg.go.dev/stuw.net/frame#CRC32C.Validate).
 
 The following example shows checksum validation and corruption detection.
 
@@ -135,7 +141,7 @@ fmt.Println(errors.Is(crc.Validate(&h, payload), frame.ErrInvalidChecksum))
 <!-- EXAMPLE:ExampleScanner:start -->
 ## Scanner
 
-Go reference: [Scanner](https://pkg.go.dev/github.com/johnknl/frame#Scanner).
+Go reference: [Scanner](https://pkg.go.dev/stuw.net/frame#Scanner).
 
 The following example shows scanning a byte stream with checksum validation.
 
@@ -167,7 +173,7 @@ fmt.Println(errors.Is(s.Err(), io.EOF))
 <!-- EXAMPLE:ExampleScanner_SeekIndex:start -->
 ### SeekIndex
 
-Go reference: [Scanner.SeekIndex](https://pkg.go.dev/github.com/johnknl/frame#Scanner.SeekIndex).
+Go reference: [Scanner.SeekIndex](https://pkg.go.dev/stuw.net/frame#Scanner.SeekIndex).
 
 The following example shows sparse-index assisted seeks.
 
@@ -200,7 +206,7 @@ fmt.Printf("%d:%s\n", f.Header.Sequence(), string(f.Payload))
 <!-- EXAMPLE:ExampleScanner_Close:start -->
 ### Close
 
-Go reference: [Scanner.Close](https://pkg.go.dev/github.com/johnknl/frame#Scanner.Close).
+Go reference: [Scanner.Close](https://pkg.go.dev/stuw.net/frame#Scanner.Close).
 
 The following example shows explicit scanner cleanup.
 

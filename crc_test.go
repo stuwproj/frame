@@ -25,8 +25,8 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/johnknl/frame/internal/testutil"
 	"github.com/stretchr/testify/require"
+	"stuw.net/frame/internal/testutil"
 )
 
 func BenchmarkCRC32C_Validate(b *testing.B) {

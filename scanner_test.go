@@ -31,9 +31,9 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/johnknl/frame/internal/testutil"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/exp/mmap"
+	"stuw.net/frame/internal/testutil"
 )
 
 type TestScanner = Scanner[uint32, TestHeader]
