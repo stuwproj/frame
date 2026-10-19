@@ -27,14 +27,18 @@ import (
 )
 
 // Index stores sparse index-to-offset checkpoints.
+//
+// An Index has a single owner that mutates and reads it. Reads are not
+// synchronized. Other goroutines must not read the index directly; instead
+// they obtain an immutable view with Snapshot, which is safe to call
+// concurrently with the owner's mutations.
+//
+// Snapshots share the backing array with the index. Mutations that would
+// overwrite entries visible to a snapshot copy the entries first.
 type Index struct {
 	entries []Entry
-	mu      sync.RWMutex
-}
-
-// NewIndex creates an offset index
-func NewIndex() *Index {
-	return &Index{}
+	mu      sync.Mutex
+	shared  bool
 }
 
 // Entry stores one sparse checkpoint.
@@ -43,21 +47,51 @@ type Entry struct {
 	Offset int64
 }
 
-// Entries returns a copy of the entries in the index.
-func (s *Index) Entries() []Entry {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	entries := make([]Entry, len(s.entries))
-	copy(entries, s.entries)
-	return entries
+// NewIndex creates an offset index
+func NewIndex(prealloc int) *Index {
+	return &Index{
+		entries: make([]Entry, 0, prealloc),
+	}
 }
 
-// Reset clears entries.
-func (s *Index) Reset() {
+// Snapshot returns an immutable view of the current entries.
+// It is safe to call concurrently with mutations of the index.
+// The returned index must not be mutated.
+func (s *Index) Snapshot() *Index {
 	s.mu.Lock()
-	s.entries = s.entries[:0]
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+
+	n := len(s.entries)
+	s.shared = true
+
+	return &Index{
+		entries: s.entries[:n:n],
+		shared:  true,
+	}
+}
+
+// Add appends a checkpoint entry for monotonic index streams.
+//
+// If index is equal to the last entry, it updates that entry in place.
+// If index is out of order, it falls back to Set semantics.
+func (s *Index) Add(index uint32, offset int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	n := len(s.entries)
+	if n == 0 || index > s.entries[n-1].Index {
+		// appending never touches entries visible to a snapshot
+		s.entries = append(s.entries, Entry{Index: index, Offset: offset})
+		return
+	}
+
+	if index == s.entries[n-1].Index {
+		s.unshareLocked()
+		s.entries[n-1].Offset = offset
+		return
+	}
+
+	s.setLocked(index, offset)
 }
 
 // Set inserts or updates the checkpoint for index.
@@ -65,38 +99,65 @@ func (s *Index) Set(index uint32, offset int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	n := len(s.entries)
-	if n == 0 {
-		s.entries = append(s.entries, Entry{Index: index, Offset: offset})
+	s.setLocked(index, offset)
+}
+
+// Reset clears entries.
+func (s *Index) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.shared {
+		s.entries = make([]Entry, 0, cap(s.entries))
+		s.shared = false
 		return
 	}
 
-	last := s.entries[n-1]
-	if index > last.Index {
-		s.entries = append(s.entries, Entry{Index: index, Offset: offset})
-		return
-	}
+	s.entries = s.entries[:0]
+}
 
-	i := sort.Search(n, func(i int) bool {
-		return s.entries[i].Index >= index
+// TruncateAfter removes all checkpoints after index.
+func (s *Index) TruncateAfter(index uint32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// the first entry after index
+	i := sort.Search(len(s.entries), func(i int) bool {
+		return s.entries[i].Index > index
 	})
 
-	if i < n && s.entries[i].Index == index {
-		s.entries[i].Offset = offset
+	if i == len(s.entries) {
 		return
 	}
 
-	s.entries = append(s.entries, Entry{})
-	copy(s.entries[i+1:], s.entries[i:])
+	// shrinking would let later appends overwrite entries visible to a snapshot
+	s.unshareLocked()
+	s.entries = s.entries[:i]
+}
 
-	s.entries[i] = Entry{Index: index, Offset: offset}
+// TruncateBefore removes all checkpoints before index.
+func (s *Index) TruncateBefore(index uint32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	i := s.findTruncIndexIndex(index)
+	if i == -1 {
+		return
+	}
+
+	s.entries = s.entries[i:]
+}
+
+// Entries returns a copy of the entries in the index.
+func (s *Index) Entries() []Entry {
+	entries := make([]Entry, len(s.entries))
+	copy(entries, s.entries)
+
+	return entries
 }
 
 // Map returns a map of index to offset.
 func (s *Index) Map() map[uint32]int64 {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	m := make(map[uint32]int64, len(s.entries))
 	for _, e := range s.entries {
 		m[e.Index] = e.Offset
@@ -107,9 +168,6 @@ func (s *Index) Map() map[uint32]int64 {
 
 // Has returns true if the checkpoint for index and offset exists.
 func (s *Index) Has(index uint32, off int64) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	idx, offset, found := s.by(func(i int) bool {
 		return s.entries[i].Index > index
 	})
@@ -135,43 +193,50 @@ func (s *Index) ForOffset(offset int64) (idx uint32, off int64, found bool) {
 	})
 }
 
-// TruncateAfter removes all checkpoints after index.
-func (s *Index) TruncateAfter(index uint32) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	i := s.findTruncIndexIndex(index)
-	if i == -1 {
+func (s *Index) setLocked(index uint32, offset int64) {
+	n := len(s.entries)
+	if n == 0 || index > s.entries[n-1].Index {
+		s.entries = append(s.entries, Entry{Index: index, Offset: offset})
 		return
 	}
 
-	s.entries = s.entries[:i+1]
+	i := sort.Search(n, func(i int) bool {
+		return s.entries[i].Index >= index
+	})
+
+	s.unshareLocked()
+
+	if i < n && s.entries[i].Index == index {
+		s.entries[i].Offset = offset
+		return
+	}
+
+	s.entries = append(s.entries, Entry{})
+	copy(s.entries[i+1:], s.entries[i:])
+
+	s.entries[i] = Entry{Index: index, Offset: offset}
 }
 
-// TruncateBefore removes all checkpoints before index.
-func (s *Index) TruncateBefore(index uint32) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	i := s.findTruncIndexIndex(index)
-	if i == -1 {
+// unshareLocked detaches the entries from any snapshot before an in-place write.
+func (s *Index) unshareLocked() {
+	if !s.shared {
 		return
 	}
 
-	s.entries = s.entries[i:]
+	entries := make([]Entry, len(s.entries), cap(s.entries))
+	copy(entries, s.entries)
+
+	s.entries = entries
+	s.shared = false
 }
 
 func (s *Index) by(cmp func(i int) bool) (idx uint32, offset int64, found bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	n := len(s.entries)
 	if n == 0 {
 		return 0, 0, false
 	}
 
 	i := sort.Search(n, cmp)
-
 	if i == 0 {
 		return 0, 0, false
 	}

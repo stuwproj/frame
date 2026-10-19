@@ -53,6 +53,47 @@ func TestOffsetIndex_TruncateAfter(t *testing.T) {
 	})
 }
 
+func TestOffsetIndex_TruncateAfterBeyondAll(t *testing.T) {
+	t.Parallel()
+
+	t.Run("removes everything when no entry is at or before the index", func(t *testing.T) {
+		t.Parallel()
+
+		var idx Index
+		idx.Set(256, 4096)
+		idx.Set(512, 8192)
+
+		idx.TruncateAfter(100)
+
+		require.Empty(t, idx.Entries())
+	})
+
+	t.Run("keeps entries at or before the index", func(t *testing.T) {
+		t.Parallel()
+
+		var idx Index
+		idx.Set(0, 64)
+		idx.Set(256, 4096)
+		idx.Set(512, 8192)
+
+		idx.TruncateAfter(300)
+
+		require.Equal(t, []Entry{{Index: 0, Offset: 64}, {Index: 256, Offset: 4096}}, idx.Entries())
+	})
+
+	t.Run("keeps everything when nothing is after the index", func(t *testing.T) {
+		t.Parallel()
+
+		var idx Index
+		idx.Set(0, 64)
+		idx.Set(256, 4096)
+
+		idx.TruncateAfter(256)
+
+		require.Len(t, idx.Entries(), 2)
+	})
+}
+
 func TestOffsetIndex_TruncateBefore(t *testing.T) {
 	t.Parallel()
 
@@ -262,5 +303,107 @@ func BenchmarkOffsetIndex(b *testing.B) {
 
 		benchFrameSink = fi
 		benchOffsetSink = off
+	})
+}
+
+func TestOffsetIndex_Snapshot(t *testing.T) {
+	t.Parallel()
+
+	newIndex := func() *Index {
+		idx := NewIndex(8)
+		idx.Add(0, 64)
+		idx.Add(256, 4096)
+		return idx
+	}
+
+	want := []Entry{{Index: 0, Offset: 64}, {Index: 256, Offset: 4096}}
+
+	t.Run("does not observe appends", func(t *testing.T) {
+		t.Parallel()
+
+		idx := newIndex()
+		snap := idx.Snapshot()
+		idx.Add(512, 8192)
+
+		require.Equal(t, want, snap.Entries())
+		require.True(t, idx.Has(512, 8192))
+	})
+
+	t.Run("does not observe in-place update", func(t *testing.T) {
+		t.Parallel()
+
+		idx := newIndex()
+		snap := idx.Snapshot()
+		idx.Add(256, 5000)
+
+		require.Equal(t, want, snap.Entries())
+		require.True(t, idx.Has(256, 5000))
+	})
+
+	t.Run("does not observe reset and refill", func(t *testing.T) {
+		t.Parallel()
+
+		idx := newIndex()
+		snap := idx.Snapshot()
+		idx.Reset()
+		idx.Add(0, 1)
+		idx.Add(1, 2)
+
+		require.Equal(t, want, snap.Entries())
+	})
+
+	t.Run("does not observe truncate and append", func(t *testing.T) {
+		t.Parallel()
+
+		idx := newIndex()
+		snap := idx.Snapshot()
+		idx.TruncateAfter(0)
+		idx.Add(128, 999)
+
+		require.Equal(t, want, snap.Entries())
+	})
+
+	t.Run("does not observe insert", func(t *testing.T) {
+		t.Parallel()
+
+		idx := newIndex()
+		snap := idx.Snapshot()
+		idx.Set(128, 2048)
+
+		require.Equal(t, want, snap.Entries())
+	})
+
+	t.Run("is safe concurrently with mutations", func(t *testing.T) {
+		t.Parallel()
+
+		idx := NewIndex(0)
+		done := make(chan struct{})
+
+		go func() {
+			defer close(done)
+			for i := range uint32(10_000) {
+				idx.Add(i, int64(i))
+				if i%100 == 0 {
+					idx.Add(i, int64(i)+1)
+				}
+				if i%1000 == 0 {
+					idx.TruncateAfter(i / 2)
+				}
+			}
+		}()
+
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+
+			snap := idx.Snapshot()
+			entries := snap.Entries()
+			for i := 1; i < len(entries); i++ {
+				require.Less(t, entries[i-1].Index, entries[i].Index)
+			}
+		}
 	})
 }

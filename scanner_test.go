@@ -386,7 +386,7 @@ func BenchmarkScanner_SeekIndex(b *testing.B) {
 
 	buf := buildFrameCorpusFrom(scannerFrameCount, scannerPayloadSize)
 
-	index := NewIndex()
+	index := NewIndex(64)
 	targets := make([]uint32, 64)
 	for i := range targets {
 		idx := uint32((i * scannerFrameCount) / len(targets))

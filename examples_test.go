@@ -150,7 +150,7 @@ func ExampleScanner_SeekIndex() {
 	raw = append(raw, encodeExampleFrame(1, []byte("bb"))...)
 	raw = append(raw, encodeExampleFrame(2, []byte("cc"))...)
 
-	idx := frame.NewIndex()
+	idx := frame.NewIndex(2)
 	idx.Set(0, 0)
 	idx.Set(2, int64((exampleHeaderSize+2)*2))
 
